@@ -1,5 +1,6 @@
-import polka from 'polka';
-import type { Server, IncomingMessage, ServerResponse } from 'http';
+import express from 'express';
+import type { Request, Response, NextFunction } from 'express';
+import type { Server } from 'http';
 import { getBridgeConfig } from '../config';
 import { state } from '../state';
 import { isAuthorized } from './auth';
@@ -15,23 +16,10 @@ export const startServer = async (): Promise<void> => {
   const config = getBridgeConfig();
   ensureOutput();
 
-  const app = polka({
-    onError: (err, req, res) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      verbose(`HTTP error: ${msg}`);
-      if (!res.headersSent) {
-        writeErrorResponse(res, 500, msg || 'internal_error', 'server_error', 'internal_error');
-      } else {
-        try { res.end(); } catch {/* ignore */}
-      }
-    },
-    onNoMatch: (_req, res) => {
-      writeNotFound(res);
-    },
-  });
+  const app = express();
 
   // Auth middleware - runs before all routes (except /health)
-  app.use((req, res, next) => {
+  app.use((req: Request, res: Response, next: NextFunction) => {
     const path = req.url ?? '/';
     if (path === '/health') {
       return next();
@@ -53,21 +41,21 @@ export const startServer = async (): Promise<void> => {
 
   // Verbose logging middleware
   if (config.verbose) {
-    app.use((req, res, next) => {
+    app.use((req: Request, _res: Response, next: NextFunction) => {
       verbose(`${req.method} ${req.url}`);
       next();
     });
   }
 
-  app.get('/health', async (_req: IncomingMessage, res: ServerResponse) => {
+  app.get('/health', async (_req: Request, res: Response) => {
     await handleHealthCheck(res, config.verbose);
   });
 
-  app.get('/v1/models', async (_req: IncomingMessage, res: ServerResponse) => {
+  app.get('/v1/models', async (_req: Request, res: Response) => {
     await handleModelsRequest(res);
   });
 
-  app.post('/v1/chat/completions', async (req: IncomingMessage, res: ServerResponse) => {
+  app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     // Rate limiting check
     if (state.activeRequests >= config.maxConcurrent) {
       if (config.verbose) {
@@ -76,7 +64,7 @@ export const startServer = async (): Promise<void> => {
       writeRateLimit(res);
       return;
     }
-    
+
     try {
       await handleChatCompletion(req, res);
     } catch (e) {
@@ -85,17 +73,30 @@ export const startServer = async (): Promise<void> => {
     }
   });
 
+  // 404 catch-all
+  app.use((_req: Request, res: Response) => {
+    writeNotFound(res);
+  });
+
+  // Error handler
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    verbose(`HTTP error: ${msg}`);
+    if (!res.headersSent) {
+      writeErrorResponse(res, 500, msg || 'internal_error', 'server_error', 'internal_error');
+    } else {
+      try { res.end(); } catch {/* ignore */}
+    }
+  });
+
   await new Promise<void>((resolve, reject) => {
     try {
-      app.listen(config.port, config.host, () => {
-        const srv = app.server as Server | undefined;
-        if (!srv) return reject(new Error('Server failed to start'));
-        state.server = srv;
+      const srv = app.listen(config.port, config.host, () => {
+        state.server = srv as unknown as Server;
         updateStatus('start');
         resolve();
       });
-      const srv = app.server as Server | undefined;
-      srv?.on('error', reject);
+      srv.on('error', reject);
     } catch (err) {
       reject(err);
     }
