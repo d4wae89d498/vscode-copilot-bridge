@@ -1,6 +1,5 @@
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import type { Server } from 'http';
 import { getBridgeConfig } from '../config';
 import { state } from '../state';
 import { isAuthorized } from './auth';
@@ -92,7 +91,7 @@ export const startServer = async (): Promise<void> => {
   await new Promise<void>((resolve, reject) => {
     try {
       const srv = app.listen(config.port, config.host, () => {
-        state.server = srv as unknown as Server;
+        state.server = srv;
         updateStatus('start');
         resolve();
       });
